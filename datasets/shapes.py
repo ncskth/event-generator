@@ -19,7 +19,7 @@ def circle_improved(size, p, device):
     dist = torch.distributions.Bernoulli(probs=p).sample((size, size)).to(device)
 
     scale = 0.75 + size/2000
-    r_2 = int(round(scale*r/2) * 2)
+    r_2 = scale*r
     r_1 = r
     outer_ring_2 = (r_1)**2 - width
     inner_ring_2 = (r_1)**2 - width * 3
