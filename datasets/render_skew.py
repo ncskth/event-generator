@@ -339,7 +339,6 @@ def render_shape_improved(
         y_min = int(y.round() - rotated_img.size()[1] / 2)
         y_max = int(y_min + rotated_img.size()[1])
 
-        print(x_min, x_max, y_min, y_max)
 
         if x_min < 0:
           x_min = 0
