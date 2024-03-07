@@ -1,4 +1,5 @@
 import torch
+import torchvision
 
 
 def gaussian_mask(r, min, max, dist, device):
@@ -22,20 +23,16 @@ def circle(size, p, device):
     return torch.where(grid < r**2, dist, img)
 
 
-def triangle(r, p, device):
-    r = int(round(r / 2) * 2)
-
-    mid_1 = r // 2
-    outer_1 = torch.distributions.Bernoulli(probs=p).sample((r, r)).to(device).bool()
-    outer_full_1 = (
-        torch.distributions.Bernoulli(probs=1).sample((r, r)).to(device).bool()
-    )
-    outer_left_1 = outer_1[:mid_1, :mid_1].tril(0).flip(1).repeat_interleave(2, 1)
-
-    outer_full_1[:mid_1] &= outer_left_1
-    outer_full_1[mid_1:] &= outer_left_1.flip(0)
-
-    return outer_full_1.float()
+def triangle(size, p, device):
+    res = torchvision.transforms.Resize((size, size), antialias=True)
+    r = size
+    one_sided = torch.tril(torch.ones(r, r, device=device))
+    two_sided = torch.concat([one_sided[:-1], one_sided.flip(0)])
+    space1 = torch.zeros((r * 2 - 1, 7 * r // 10), device=device)
+    space2 = torch.zeros((r * 2 - 1, 7 * r // 10), device=device)
+    tri = torch.concat([space1, two_sided, space2], dim=1)
+    resized = res(tri.unsqueeze(0)).squeeze()
+    return resized / resized.max()
 
 
 def square(r, p, device):
