@@ -313,8 +313,6 @@ def render_shape(
             else p.shear_start
         )
 
-    diffs = []
-
     # Loop timesteps
     for i in range(-1, images.shape[0]):
         # Fill in shape
@@ -417,17 +415,6 @@ def render_shape(
             # Take the diff
             prev_down = downsample(previous_image)
             curr_down = downsample(current_image)
-            # diffs.append([x, y, prev_down])
-            # diff = previous_image - current_image
-            # if diff.sum() != 0:
-            # diff = diff / diff.sum()
-            # downsampled_diff = torch.nn.functional.interpolate(
-            # diff.unsqueeze(0).unsqueeze(0),
-            # scale_factor=1 / p.upsampling_factor,
-            # mode="bilinear",
-            # antialias=True,
-            # )
-            # downsampled_diff = downsample(previous_image - current_image)
             downsampled_diff = (prev_down - curr_down).squeeze()
             noise_mask = event_dist.sample((downsampled_diff.shape)).bool().to(p.device)
             ch1, neuron_state[0] = neuron_on(
@@ -437,9 +424,6 @@ def render_shape(
                 (-1 * downsampled_diff).clip(0),
                 neuron_state[1],
             )
-            diffs.append(downsampled_diff)
-            # ch1 = downsampled_diff > p.upsampling_cutoff
-            # ch2 = downsampled_diff < -p.upsampling_cutoff
             # Assign channels
             images[i, 0] = ch1.bool() & noise_mask
             images[i, 1] = ch2.bool() & noise_mask
@@ -455,7 +439,7 @@ def render_shape(
 
     # Add noise
     images += bg_noise_dist.sample(images.shape).to(p.device).bool()
-    return images.float().clip(0, 1), labels.unsqueeze(1), diffs
+    return images.float().clip(0, 1), labels.unsqueeze(1)
 
 
 if __name__ == "__main__":
