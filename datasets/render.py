@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torchvision
 import norse
+from norse.torch.functional.threshold import threshold
 
 
 def events_to_frames(frames, polarity: bool = False):
@@ -73,10 +74,10 @@ ZERO_DISTRIBUTION = torch.distributions.Categorical(torch.tensor([1]))
 def blit_shape(shape, bg, x, y, device):
     width = shape.shape[0]
     height = shape.shape[1]
-    offset_x = torch.round((x - width) / 2) - (x - width) / 2
-    offset_y = torch.round((y - height) / 2) - (y - height) / 2
-    x_lin = torch.linspace(-1, 1, height).to(device) - offset_x / (width / 2)
-    y_lin = torch.linspace(-1, 1, width).to(device) - offset_y / (height / 2)
+    offset_x = torch.round(x) - x
+    offset_y = torch.round(y) - y
+    x_lin = torch.linspace(-1, 1, height).to(device) + offset_x / (width / 2)
+    y_lin = torch.linspace(-1, 1, width).to(device) + offset_y / (height / 2)
     coo = (
         torch.stack(torch.meshgrid(x_lin, y_lin, indexing="xy"), -1)
         .unsqueeze(0)
@@ -88,11 +89,15 @@ def blit_shape(shape, bg, x, y, device):
         align_corners=False,
         padding_mode="zeros",
     ).squeeze()
-    left_x = x - width // 2
+    f = lambda x: round(x.item())  # round(round(x.item(), 1))# + 1e-5)
+    left_x = f(x - width // 2 + offset_x)
     right_x = min(left_x + width, bg.shape[0])
-    left_y = y - width // 2
+    left_y = f(y - width // 2 + offset_y)
     right_y = min(left_y + height, bg.shape[1])
-    bg[int(left_x) : int(right_x), int(left_y) : int(right_y)] = sampled_img
+    bg[left_x:right_x, left_y:right_y] = sampled_img[
+        : right_x - left_x, : right_y - left_y
+    ]
+    return offset_x, offset_y, left_x, left_y, sampled_img
 
 
 @dataclass
@@ -121,6 +126,7 @@ class RenderParameters:
     bg_noise_density: float = 0.001
     shape_density: float = 1
     polarity: bool = True
+    warmup_steps: int = 5
 
     upsampling_factor: int = 8
     upsampling_cutoff: float = None
@@ -137,7 +143,7 @@ class RenderParameters:
     translate_max: float = 1
     translate_velocity_delta: Callable[[int], torch.Tensor] = None
     translate_velocity_max: float = field(init=False)
-    translate_velocity_scale: float = 0.03
+    translate_velocity_scale: float = 0.02
     translate_velocity_start: torch.Tensor = None
     scale: bool = False
     scale_start: float = None
@@ -149,14 +155,14 @@ class RenderParameters:
     rotate_start: float = None
     rotate_max: float = 1
     rotate_velocity_delta: Callable[[int], torch.Tensor] = None
-    rotate_velocity_scale: float = 0.05
+    rotate_velocity_scale: float = 0.04
     rotate_velocity_max: float = field(init=False)
     rotate_velocity_start: float = None
     shear: bool = False
     shear_start: float = None
     shear_max: float = 30
     shear_velocity_delta: Callable[[int], torch.Tensor] = None
-    shear_velocity_scale: float = 0.01
+    shear_velocity_scale: float = 0.04
     shear_velocity_max: float = field(init=False)
     shear_velocity_start: float = None
 
@@ -186,6 +192,26 @@ class RenderParameters:
                     )
 
 
+class IAFSubtractReset(torch.nn.Module):
+
+    def __init__(self, p: norse.torch.IAFParameters):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x, state=None):
+        if state is None:
+            state = norse.torch.IAFFeedForwardState(
+                v=torch.zeros_like(x),
+            )
+        v_new = state.v + x
+        # compute new positive and negative spikes
+        z_pos = (v_new > self.p.v_th)
+        z_neg = (v_new < -self.p.v_th)
+        # compute reset
+        v_new = v_new - z_pos * self.p.v_th + z_neg * self.p.v_th
+        return torch.stack([z_pos, z_neg]), norse.torch.IAFFeedForwardState(v_new)
+
+
 def render_shape(
     shape_fn: Callable[[int, float, str], torch.Tensor],
     p: RenderParameters,
@@ -209,9 +235,8 @@ def render_shape(
     images = torch.zeros(p.length, 2, *p.resolution, dtype=torch.bool, device=p.device)
     labels = torch.zeros(p.length, 2)
     neuron_p = norse.torch.IAFParameters(v_th=p.upsampling_cutoff)
-    neuron_on = norse.torch.IAFCell(neuron_p)
-    neuron_off = norse.torch.IAFCell(neuron_p)
-    neuron_state = [None, None]
+    neuron_population = IAFSubtractReset(neuron_p)
+    neuron_state = None
     current_image = None
     previous_image = None
 
@@ -240,31 +265,31 @@ def render_shape(
     resolution_upscaled = torch.as_tensor(p.resolution) * p.upsampling_factor
 
     # Initialize starting x, y
+    x = (
+        p.translate_start_x * p.upsampling_factor
+        if p.translate_start_x is not None
+        else torch.randint(
+            low=int(scale) // 2 + mask_r * p.upsampling_factor,
+            high=resolution_upscaled[0]
+            - int(scale) // 2
+            - mask_r * p.upsampling_factor,
+            size=(1,),
+            device=p.device,
+        )
+    )
+    y = (
+        p.translate_start_y * p.upsampling_factor
+        if p.translate_start_y is not None
+        else torch.randint(
+            low=int(scale) // 2 + mask_r * p.upsampling_factor,
+            high=resolution_upscaled[1]
+            - int(scale) // 2
+            - mask_r * p.upsampling_factor,
+            size=(1,),
+            device=p.device,
+        )
+    )
     if p.translate:
-        x = (
-            p.translate_start_x * p.upsampling_factor
-            if p.translate_start_x is not None
-            else torch.randint(
-                low=int(scale) // 2 + mask_r * p.upsampling_factor,
-                high=resolution_upscaled[0]
-                - int(scale) // 2
-                - mask_r * p.upsampling_factor,
-                size=(1,),
-                device=p.device,
-            )
-        )
-        y = (
-            p.translate_start_y * p.upsampling_factor
-            if p.translate_start_y is not None
-            else torch.randint(
-                low=int(scale) // 2 + mask_r * p.upsampling_factor,
-                high=resolution_upscaled[1]
-                - int(scale) // 2
-                - mask_r * p.upsampling_factor,
-                size=(1,),
-                device=p.device,
-            )
-        )
         trans_velocity = (
             (
                 (torch.rand((2,), device=p.device) - 1.5)
@@ -276,16 +301,18 @@ def render_shape(
         )
     else:
         trans_velocity = torch.zeros((2,), device=p.device)
-        x = (
-            resolution_upscaled[0] // 2
-            if p.translate_start_x is None
-            else p.translate_start_x
-        )
-        y = (
-            resolution_upscaled[1] // 2
-            if p.translate_start_y is None
-            else p.translate_start_y
-        )
+    # else:
+    #     trans_velocity = torch.zeros((2,), device=p.device)
+    #     x = (
+    #         resolution_upscaled[0] // 2
+    #         if p.translate_start_x is None
+    #         else p.translate_start_x
+    #     )
+    #     y = (
+    #         resolution_upscaled[1] // 2
+    #         if p.translate_start_y is None
+    #         else p.translate_start_y
+    #     )
 
     # Initialize scale
     if p.scale:
@@ -314,7 +341,7 @@ def render_shape(
         )
 
     # Loop timesteps
-    for i in range(-1, images.shape[0]):
+    for i in range(-p.warmup_steps - 1, images.shape[0]):
         # Fill in shape
         img = shape_fn(
             int(scale * p.upsampling_factor), p=p.shape_density, device=p.device
@@ -417,20 +444,14 @@ def render_shape(
             curr_down = downsample(current_image)
             downsampled_diff = (prev_down - curr_down).squeeze()
             noise_mask = event_dist.sample((downsampled_diff.shape)).bool().to(p.device)
-            ch1, neuron_state[0] = neuron_on(
-                (downsampled_diff).clip(0), neuron_state[0]
-            )
-            ch2, neuron_state[1] = neuron_off(
-                (-1 * downsampled_diff).clip(0),
-                neuron_state[1],
-            )
-            # Assign channels
-            images[i, 0] = ch1.bool() & noise_mask
-            images[i, 1] = ch2.bool() & noise_mask
+            ch1, neuron_state = neuron_population(downsampled_diff, neuron_state)
 
-            labels[i] = torch.tensor(
-                [(x_min_cropped + x_max) // 2, (y_min_cropped + y_max) // 2]
-            )
+            # Assign channels after warmup
+            if i > 0:
+                images[i] = ch1.bool() & noise_mask
+                labels[i] = torch.tensor(
+                    [(x_min_cropped + x_max) // 2, (y_min_cropped + y_max) // 2]
+                )
 
         previous_image = current_image
 
