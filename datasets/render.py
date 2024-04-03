@@ -131,7 +131,9 @@ class RenderParameters:
     device: str = "cuda"
 
     transformation_velocity_max: float = 1
-    transformation_velocity_distribution: Callable[[float], torch.distributions.Distribution] = lambda x: torch.distributions.Normal(0, x)
+    transformation_velocity_distribution: Callable[
+        [float], torch.distributions.Distribution
+    ] = lambda x: torch.distributions.Normal(0, x)
 
     translate: bool = False
     translate_start_x: float = None
@@ -164,14 +166,18 @@ class RenderParameters:
         if self.upsampling_cutoff is None:
             self.upsampling_cutoff = 1 / self.upsampling_factor
         for attr in ["translate", "scale", "rotate", "shear"]:
-            max_velocity = getattr(self, f"transformation_velocity_max") * getattr(self, f"{attr}_velocity_scale")
+            max_velocity = getattr(self, f"transformation_velocity_max") * getattr(
+                self, f"{attr}_velocity_scale"
+            )
             setattr(self, f"{attr}_velocity_max", max_velocity)
             if getattr(self, attr + "_velocity_delta") is None:
                 if getattr(self, attr):
                     setattr(
                         self,
                         f"{attr}_velocity_delta",
-                        lambda s: self.transformation_velocity_distribution(getattr(self, f"{attr}_velocity_scale")).sample((s,))
+                        lambda s: self.transformation_velocity_distribution(
+                            getattr(self, f"{attr}_velocity_scale")
+                        ).sample((s,)),
                     )
                 else:
                     setattr(
@@ -277,26 +283,12 @@ def render_shape(
     )
     if p.translate:
         trans_velocity = (
-            (
-                (torch.rand((2,), device=p.device) - 1.5) * p.translate_velocity_max
-            )
+            ((torch.rand((2,), device=p.device) - 1.5) * p.translate_velocity_max)
             if p.translate_velocity_start is None
             else p.translate_velocity_start * p.translate_velocity_scale
         )
     else:
         trans_velocity = torch.zeros((2,), device=p.device)
-    # else:
-    #     trans_velocity = torch.zeros((2,), device=p.device)
-    #     x = (
-    #         resolution_upscaled[0] // 2
-    #         if p.translate_start_x is None
-    #         else p.translate_start_x
-    #     )
-    #     y = (
-    #         resolution_upscaled[1] // 2
-    #         if p.translate_start_y is None
-    #         else p.translate_start_y
-    #     )
 
     # Initialize scale
     if p.scale:
@@ -332,8 +324,8 @@ def render_shape(
         )
 
         # Translate
-        x = x + trans_velocity[0] 
-        y = y + trans_velocity[1] 
+        x = x + trans_velocity[0]
+        y = y + trans_velocity[1]
         x = x.clip(
             int(img.size()[0] * np.sqrt(2) / 2) + mask_r * p.upsampling_factor,
             resolution_upscaled[0]
@@ -354,8 +346,7 @@ def render_shape(
         # Rotate
         angle = angle + angle_velocity
         angle_velocity = (
-            angle_velocity
-            + p.rotate_velocity_delta(1).to(p.device) * 180 / torch.pi
+            angle_velocity + p.rotate_velocity_delta(1).to(p.device) * 180 / torch.pi
         ).clip(-p.rotate_velocity_max, p.rotate_velocity_max)
         img = rotate_tensor(img, float(angle))
         # Shear

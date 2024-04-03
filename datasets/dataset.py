@@ -19,7 +19,7 @@ class ShapeDataset(torch.utils.data.Dataset):
         stack: int = 1,
         sum_frames: bool = False,
         device: str = "cpu",
-        shuffle_files: bool = False
+        shuffle_files: bool = False,
     ) -> None:
         super().__init__()
         self.files = []
