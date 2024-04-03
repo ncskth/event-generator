@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import signal
 import traceback
@@ -8,7 +7,7 @@ from typing import List, NamedTuple, Optional
 
 import torch
 import tqdm.asyncio
-from render import render_shape
+from render import render_shape, RenderParameters
 from shapes import *
 
 
@@ -25,7 +24,7 @@ class DatasetParameters(NamedTuple):
     device: str = "cuda"
     length: int = 128
 
-    transformation: bool = False
+    translation: bool = False
     scale: bool = False
     rotate: bool = False
     shear: bool = False
@@ -49,25 +48,24 @@ def render_shapes(p: DatasetParameters):
     shapes = []
     labels = []
     for fn in [circle, square, triangle]:
-        s, l = render_shape(
-            fn,
-            len=p.length,
+        render_p = RenderParameters(
+            length=p.length,
             resolution=p.resolution,
-            shape_p=p.shape_density,
-            bg_noise_p=p.bg_density,
-            event_p=p.event_density,
+            shape_density=p.shape_density,
+            bg_noise_density=p.bg_density,
+            event_density=p.event_density,
             device=p.device,
-            scale_change=p.scale,
-            trans_change=p.transformation,
-            rotate_change=p.rotate,
-            shear_change=p.shear,
-            upscale_factor=p.upsampling_factor,
-            upscale_cutoff=p.upsampling_cutoff,
-            max_trans_change=p.max_velocity,
-            max_scale_change=p.max_velocity,
-            max_angle_change=p.max_velocity,
-            max_shear_change=p.max_velocity,
+            scale=p.scale,
+            translate=p.translation,
+            rotate=p.rotate,
+            rotate_start=None if p.rotate else 10,
+            shear=p.shear,
+            shear_start=None if p.shear else 10,
+            upsampling_factor=p.upsampling_factor,
+            upsampling_cutoff=p.upsampling_cutoff,
+            transformation_velocity_max=p.max_velocity,
         )
+        s, l = render_shape(fn, render_p)
         shapes.append(s)
         labels.append(l)
 
@@ -145,7 +143,7 @@ async def main(args):
                         event_density=event_p,
                         polarity=args.polarity,
                         device=f"cuda:{i % threads}",
-                        transformation=comb[0],
+                        translation=comb[0],
                         scale=comb[1],
                         rotate=comb[2],
                         shear=comb[3],
@@ -204,7 +202,7 @@ if __name__ == "__main__":
         "--event_densities",
         nargs="+",
         type=float,
-        default=[0.8],
+        default=[1.0],
         help="Event density as a list of floats",
     )
     parser.add_argument(

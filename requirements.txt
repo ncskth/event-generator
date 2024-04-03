@@ -1,3 +1,2 @@
-norse
 torch
 tqdm
