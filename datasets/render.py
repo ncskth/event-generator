@@ -4,8 +4,6 @@ import math
 import numpy as np
 import torch
 import torchvision
-import norse
-from norse.torch.functional.threshold import threshold
 
 
 def events_to_frames(frames, polarity: bool = False):
@@ -133,36 +131,32 @@ class RenderParameters:
     device: str = "cuda"
 
     transformation_velocity_max: float = 1
-    transformation_velocity_distribution: torch.distributions.Distribution = (
-        torch.distributions.Normal(loc=0, scale=0.2)
-    )
+    transformation_velocity_distribution: Callable[[float], torch.distributions.Distribution] = lambda x: torch.distributions.Normal(0, x)
 
     translate: bool = False
     translate_start_x: float = None
     translate_start_y: float = None
-    translate_max: float = 1
     translate_velocity_delta: Callable[[int], torch.Tensor] = None
     translate_velocity_max: float = field(init=False)
-    translate_velocity_scale: float = 0.02
+    translate_velocity_scale: float = 1
     translate_velocity_start: torch.Tensor = None
     scale: bool = False
     scale_start: float = None
     scale_velocity_delta: Callable[[int], torch.Tensor] = None
-    scale_velocity_scale: float = 0.01
+    scale_velocity_scale: float = 0.002
     scale_velocity_max: float = field(init=False)
     scale_velocity_start: float = None
     rotate: bool = False
     rotate_start: float = None
-    rotate_max: float = 1
     rotate_velocity_delta: Callable[[int], torch.Tensor] = None
-    rotate_velocity_scale: float = 0.04
+    rotate_velocity_scale: float = 0.2
     rotate_velocity_max: float = field(init=False)
     rotate_velocity_start: float = None
     shear: bool = False
     shear_start: float = None
     shear_max: float = 30
     shear_velocity_delta: Callable[[int], torch.Tensor] = None
-    shear_velocity_scale: float = 0.04
+    shear_velocity_scale: float = 0.2
     shear_velocity_max: float = field(init=False)
     shear_velocity_start: float = None
 
@@ -170,19 +164,14 @@ class RenderParameters:
         if self.upsampling_cutoff is None:
             self.upsampling_cutoff = 1 / self.upsampling_factor
         for attr in ["translate", "scale", "rotate", "shear"]:
-            setattr(
-                self,
-                f"{attr}_velocity_max",
-                getattr(self, f"transformation_velocity_max")
-                * getattr(self, f"{attr}_velocity_scale"),
-            )
+            max_velocity = getattr(self, f"transformation_velocity_max") * getattr(self, f"{attr}_velocity_scale")
+            setattr(self, f"{attr}_velocity_max", max_velocity)
             if getattr(self, attr + "_velocity_delta") is None:
                 if getattr(self, attr):
                     setattr(
                         self,
                         f"{attr}_velocity_delta",
-                        lambda s: self.transformation_velocity_distribution.sample((s,))
-                        * getattr(self, f"{attr}_velocity_scale"),
+                        lambda s: self.transformation_velocity_distribution(getattr(self, f"{attr}_velocity_scale")).sample((s,))
                     )
                 else:
                     setattr(
@@ -194,22 +183,20 @@ class RenderParameters:
 
 class IAFSubtractReset(torch.nn.Module):
 
-    def __init__(self, p: norse.torch.IAFParameters):
+    def __init__(self, cutoff: float):
         super().__init__()
-        self.p = p
+        self.cutoff = cutoff
 
     def forward(self, x, state=None):
         if state is None:
-            state = norse.torch.IAFFeedForwardState(
-                v=torch.zeros_like(x),
-            )
-        v_new = state.v + x
+            state = torch.zeros_like(x)
+        v_new = state + x
         # compute new positive and negative spikes
-        z_pos = (v_new > self.p.v_th)
-        z_neg = (v_new < -self.p.v_th)
+        z_pos = v_new > self.cutoff
+        z_neg = v_new < -self.cutoff
         # compute reset
-        v_new = v_new - z_pos * self.p.v_th + z_neg * self.p.v_th
-        return torch.stack([z_pos, z_neg]), norse.torch.IAFFeedForwardState(v_new)
+        v_new = v_new - z_pos * self.cutoff + z_neg * self.cutoff
+        return torch.stack([z_pos, z_neg]), v_new
 
 
 def render_shape(
@@ -234,8 +221,7 @@ def render_shape(
     mask_r = 5
     images = torch.zeros(p.length, 2, *p.resolution, dtype=torch.bool, device=p.device)
     labels = torch.zeros(p.length, 2)
-    neuron_p = norse.torch.IAFParameters(v_th=p.upsampling_cutoff)
-    neuron_population = IAFSubtractReset(neuron_p)
+    neuron_population = IAFSubtractReset(p.upsampling_cutoff)
     neuron_state = None
     current_image = None
     previous_image = None
@@ -292,9 +278,7 @@ def render_shape(
     if p.translate:
         trans_velocity = (
             (
-                (torch.rand((2,), device=p.device) - 1.5)
-                * p.transformation_velocity_max
-                * p.translate_velocity_scale
+                (torch.rand((2,), device=p.device) - 1.5) * p.translate_velocity_max
             )
             if p.translate_velocity_start is None
             else p.translate_velocity_start * p.translate_velocity_scale
@@ -348,8 +332,8 @@ def render_shape(
         )
 
         # Translate
-        x = x + trans_velocity[0] * p.upsampling_factor
-        y = y + trans_velocity[1] * p.upsampling_factor
+        x = x + trans_velocity[0] 
+        y = y + trans_velocity[1] 
         x = x.clip(
             int(img.size()[0] * np.sqrt(2) / 2) + mask_r * p.upsampling_factor,
             resolution_upscaled[0]
@@ -371,7 +355,7 @@ def render_shape(
         angle = angle + angle_velocity
         angle_velocity = (
             angle_velocity
-            + p.rotate_velocity_delta(1).to(p.device) * p.rotate_velocity_max
+            + p.rotate_velocity_delta(1).to(p.device) * 180 / torch.pi
         ).clip(-p.rotate_velocity_max, p.rotate_velocity_max)
         img = rotate_tensor(img, float(angle))
         # Shear
@@ -449,8 +433,11 @@ def render_shape(
             # Assign channels after warmup
             if i > 0:
                 images[i] = ch1.bool() & noise_mask
-                labels[i] = torch.tensor(
-                    [(x_min_cropped + x_max) // 2, (y_min_cropped + y_max) // 2]
+                labels[i] = (
+                    torch.tensor(
+                        [(x_min_cropped + x_max) // 2, (y_min_cropped + y_max) // 2]
+                    )
+                    / p.upsampling_factor
                 )
 
         previous_image = current_image
