@@ -145,26 +145,26 @@ class RenderParameters:
     scale: bool = False
     scale_start: float = None
     scale_velocity_delta: Callable[[int], torch.Tensor] = None
-    scale_velocity_scale: float = 0.002
+    scale_velocity_scale: float = 0.005
     scale_velocity_max: float = field(init=False)
     scale_velocity_start: float = None
     rotate: bool = False
     rotate_start: float = None
     rotate_velocity_delta: Callable[[int], torch.Tensor] = None
-    rotate_velocity_scale: float = 0.2
+    rotate_velocity_scale: float = 0.1
     rotate_velocity_max: float = field(init=False)
     rotate_velocity_start: float = None
     shear: bool = False
     shear_start: float = None
     shear_max: float = 30
     shear_velocity_delta: Callable[[int], torch.Tensor] = None
-    shear_velocity_scale: float = 0.2
+    shear_velocity_scale: float = 0.1
     shear_velocity_max: float = field(init=False)
     shear_velocity_start: float = None
 
     def __post_init__(self):
         if self.upsampling_cutoff is None:
-            self.upsampling_cutoff = 1 / self.upsampling_factor
+            self.upsampling_cutoff = 1/3
         for attr in ["translate", "scale", "rotate", "shear"]:
             max_velocity = getattr(self, f"transformation_velocity_max") * getattr(
                 self, f"{attr}_velocity_scale"
@@ -175,9 +175,7 @@ class RenderParameters:
                     setattr(
                         self,
                         f"{attr}_velocity_delta",
-                        lambda s: self.transformation_velocity_distribution(
-                            getattr(self, f"{attr}_velocity_scale")
-                        ).sample((s,)),
+                        lambda s: self.transformation_velocity_distribution(getattr(self, f"{attr}_velocity_scale")).sample((s,)),
                     )
                 else:
                     setattr(
@@ -283,7 +281,7 @@ def render_shape(
     )
     if p.translate:
         trans_velocity = (
-            ((torch.rand((2,), device=p.device) - 1.5) * p.translate_velocity_max)
+            ((torch.rand((2,), device=p.device) - 0.5) * 2 * p.translate_velocity_max)
             if p.translate_velocity_start is None
             else p.translate_velocity_start * p.translate_velocity_scale
         )

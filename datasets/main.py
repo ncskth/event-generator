@@ -7,7 +7,7 @@ from typing import List, NamedTuple, Optional
 
 import torch
 import tqdm.asyncio
-from render import render_shape, RenderParameters
+from render import render_shape, RenderParameters, ZERO_DISTRIBUTION
 from shapes import *
 
 
@@ -29,6 +29,7 @@ class DatasetParameters(NamedTuple):
     rotate: bool = False
     shear: bool = False
     max_velocity: float = 0.2
+    constant_velocity: bool = True
 
 
 def superimpose_data(file, images, p: DatasetParameters):
@@ -47,6 +48,21 @@ def superimpose_data(file, images, p: DatasetParameters):
 def render_shapes(p: DatasetParameters):
     shapes = []
     labels = []
+    args = {}
+    if p.constant_velocity:
+        cat = torch.distributions.Categorical(torch.tensor([0.5, 0.5]))
+        if p.translation:
+            args["translate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
+            args["translate_velocity_start"] = (cat.sample((2, )).to(p.device) - 0.5) * 2 * p.max_velocity
+        if p.scale:
+            args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
+            args["scale_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+        if p.rotate:
+            args["rotate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
+            args["rotate_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+        if p.shear:
+            args["shear_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
+            args["shear_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
     for fn in [circle, square, triangle]:
         render_p = RenderParameters(
             length=p.length,
@@ -64,6 +80,7 @@ def render_shapes(p: DatasetParameters):
             upsampling_factor=p.upsampling_factor,
             upsampling_cutoff=p.upsampling_cutoff,
             transformation_velocity_max=p.max_velocity,
+            **args
         )
         s, l = render_shape(fn, render_p)
         shapes.append(s)
@@ -148,6 +165,7 @@ async def main(args):
                         rotate=comb[2],
                         shear=comb[3],
                         max_velocity=max_velocity,
+                        constant_velocity=True
                     )
                     if not output_folder.exists():
                         output_folder.mkdir()
