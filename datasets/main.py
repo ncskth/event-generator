@@ -49,21 +49,21 @@ def render_shapes(p: DatasetParameters):
     shapes = []
     labels = []
     args = {}
-    if p.constant_velocity:
-        cat = torch.distributions.Categorical(torch.tensor([0.5, 0.5]))
-        if p.translation:
-            args["translate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
-            args["translate_velocity_start"] = (cat.sample((2, )).to(p.device) - 0.5) * 2 * p.max_velocity
-        if p.scale:
-            args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
-            args["scale_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
-        if p.rotate:
-            args["rotate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
-            args["rotate_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
-        if p.shear:
-            args["shear_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
-            args["shear_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
     for fn in [circle, square, triangle]:
+        if p.constant_velocity:
+            cat = torch.distributions.Categorical(torch.tensor([0.5, 0.5]))
+            if p.translation:
+                args["translate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
+                args["translate_velocity_start"] = (cat.sample((2, )).to(p.device) - 0.5) * 2 * p.max_velocity
+            if p.scale:
+                args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
+                args["scale_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+            if p.rotate:
+                args["rotate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
+                args["rotate_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+            if p.shear:
+                args["shear_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
+                args["shear_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
         render_p = RenderParameters(
             length=p.length,
             resolution=p.resolution,
