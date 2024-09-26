@@ -28,8 +28,8 @@ def triangle(size, p, device):
     r = size
     one_sided = torch.tril(torch.ones(r, r, device=device))
     two_sided = torch.concat([one_sided[:-1], one_sided.flip(0)])
-    space1 = torch.zeros((r * 2 - 1, 7 * r // 10), device=device)
-    space2 = torch.zeros((r * 2 - 1, 7 * r // 10), device=device)
+    space1 = torch.zeros((r * 2 - 1, 3 * r // 5), device=device)
+    space2 = torch.zeros((r * 2 - 1, 3 * r // 5), device=device)
     tri = torch.concat([space1, two_sided, space2], dim=1)
     resized = res(tri.unsqueeze(0)).squeeze()
     return resized / resized.max()

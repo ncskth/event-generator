@@ -3,12 +3,25 @@ import asyncio
 from pathlib import Path
 import signal
 import traceback
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional, Union
+from numbers import Number
+import ray
 
 import torch
 import tqdm.asyncio
 from render import render_shape, RenderParameters, ZERO_DISTRIBUTION
 from shapes import *
+
+def bool_or_float(s: Any) -> Union[bool, float]:
+    ua = str(s).upper()
+    if 'TRUE'.startswith(ua):
+       return True
+    elif 'FALSE'.startswith(ua):
+       return False
+    try:
+        return float(s)
+    except:
+        raise ValueError("Expected a bool or number, but got", s)
 
 
 class DatasetParameters(NamedTuple):
@@ -24,8 +37,8 @@ class DatasetParameters(NamedTuple):
     device: str = "cuda"
     length: int = 128
 
-    translation: bool = False
-    scale: bool = False
+    translate: bool = False
+    scale: Union[bool, float] = False
     rotate: bool = False
     shear: bool = False
     max_velocity: float = 0.2
@@ -52,18 +65,31 @@ def render_shapes(p: DatasetParameters):
     for fn in [circle, square, triangle]:
         if p.constant_velocity:
             cat = torch.distributions.Categorical(torch.tensor([0.5, 0.5]))
-            if p.translation:
-                args["translate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
-                args["translate_velocity_start"] = (cat.sample((2, )).to(p.device) - 0.5) * 2 * p.max_velocity
-            if p.scale:
-                args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
-                args["scale_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+            if p.translate:
+                args["translate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample(
+                    (x,)
+                )
+                args["translate_velocity_start"] = (
+                    (cat.sample((2,)).to(p.device) - 0.5) * 2 * p.max_velocity
+                )
+            if p.scale and isinstance(p.scale, bool):
+                args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
+                args["scale_velocity_start"] = (
+                    (cat.sample((1,)).to(p.device) - 0.5) * 2 * p.max_velocity
+                )
+            if isinstance(p.scale, Number):
+                args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
+                args["scale_start"] = float(p.scale)
             if p.rotate:
-                args["rotate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
-                args["rotate_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+                args["rotate_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
+                args["rotate_velocity_start"] = (
+                    (cat.sample((1,)).to(p.device) - 0.5) * 2 * p.max_velocity
+                )
             if p.shear:
-                args["shear_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x, ))
-                args["shear_velocity_start"] = (cat.sample((1, )).to(p.device) - 0.5) * 2 * p.max_velocity
+                args["shear_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
+                args["shear_velocity_start"] = (
+                    (cat.sample((1,)).to(p.device) - 0.5) * 2 * p.max_velocity
+                )
         render_p = RenderParameters(
             length=p.length,
             resolution=p.resolution,
@@ -71,8 +97,8 @@ def render_shapes(p: DatasetParameters):
             bg_noise_density=p.bg_density,
             event_density=p.event_density,
             device=p.device,
-            scale=p.scale,
-            translate=p.translation,
+            scale=p.scale == True,
+            translate=p.translate,
             rotate=p.rotate,
             rotate_start=None if p.rotate else 10,
             shear=p.shear,
@@ -80,7 +106,7 @@ def render_shapes(p: DatasetParameters):
             upsampling_factor=p.upsampling_factor,
             upsampling_cutoff=p.upsampling_cutoff,
             transformation_velocity_max=p.max_velocity,
-            **args
+            **args,
         )
         s, l = render_shape(fn, render_p)
         shapes.append(s)
@@ -93,8 +119,8 @@ def render_shapes(p: DatasetParameters):
     labels = torch.stack(labels).permute(1, 0, 2, 3)
     return images, labels
 
-
-async def render_points(output_folder, index, p: DatasetParameters):
+@ray.remote(num_gpus=1)
+def render_points(output_folder, index, p: DatasetParameters):
     filename = output_folder / f"{index}.dat"
     try:
         with torch.inference_mode():
@@ -110,14 +136,12 @@ async def render_points(output_folder, index, p: DatasetParameters):
         print(e)
         traceback.print_exc()
 
-
-async def main(args):
+def main(args):
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
 
     n = torch.arange(args.n)
-    threads = torch.cuda.device_count()
     resolution = (300, 300)
     root_folder = Path(args.root)
     if not root_folder.exists():
@@ -132,9 +156,10 @@ async def main(args):
 
     # Permutations of transformations
     transformation_combinations = [
-        torch.tensor(
-            [args.translation, args.scaling, args.rotation, args.shearing]
-        ).int()
+        args.translation,
+        args.scaling,
+        args.rotation,
+        args.shearing,
     ]
 
     # Start multiprocessing
@@ -143,36 +168,36 @@ async def main(args):
     futures = []
     for event_p in args.event_densities:
         for max_velocity in args.max_velocities:
-            for comb in transformation_combinations:
-                combination_name = (
-                    str(comb.tolist()).replace(", ", "").replace("True", "1")[1:-1]
-                )
-                output_folder = (
-                    root_folder
-                    / f"v{max_velocity:.2f}-p{event_p:.2f}-{combination_name}"
-                )
-                for i in n:
+            combination_name = "".join(
+                ["1" if x == True else "0" for x in transformation_combinations]
+            )
+            if isinstance(args.scaling, float):
+                combination_name = f"s{args.scaling}_" + combination_name
+            output_folder = (
+                root_folder
+                / f"v{max_velocity:.2f}-p{event_p:.2f}-{combination_name}"
+            )
+            for i in n:
 
-                    parameters = DatasetParameters(
-                        resolution=resolution,
-                        bg_density=0.001,
-                        bg_files=bg_files,
-                        event_density=event_p,
-                        polarity=args.polarity,
-                        device=f"cuda:{i % threads}",
-                        translation=comb[0],
-                        scale=comb[1],
-                        rotate=comb[2],
-                        shear=comb[3],
-                        max_velocity=max_velocity,
-                        constant_velocity=True
-                    )
-                    if not output_folder.exists():
-                        output_folder.mkdir()
-                    f = render_points(output_folder, i, parameters)
-                    futures.append(f)
-    for f in tqdm.asyncio.tqdm.as_completed(futures):
-        await f
+                parameters = DatasetParameters(
+                    resolution=resolution,
+                    bg_density=0.001,
+                    bg_files=bg_files,
+                    event_density=event_p,
+                    polarity=args.polarity,
+                    device=f"cuda",
+                    translate=args.translation,
+                    scale=args.scaling,
+                    rotate=args.rotation,
+                    shear=args.shearing,
+                    max_velocity=max_velocity,
+                    constant_velocity=True,
+                )
+                if not output_folder.exists():
+                    output_folder.mkdir()
+                f = render_points.remote(output_folder, i, parameters)
+                futures.append(f)
+    ray.get(futures)
 
 
 if __name__ == "__main__":
@@ -199,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--scaling",
         default=False,
-        action="store_true",
+        type=bool_or_float
     )
     parser.add_argument(
         "--rotation",
@@ -231,4 +256,6 @@ if __name__ == "__main__":
         help="Max velocities as a list of float (1 = 1px change/frame)",
     )
     args = parser.parse_args()
+
+    ray.init()
     asyncio.run(main(args))

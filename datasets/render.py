@@ -226,10 +226,6 @@ def render_shape(
     Returns:
         A tensor of size (lengh, resolution)
     """
-    # assert (
-    #     p.resolution[0] >= 256 and p.resolution[1] >= 256
-    # ), "Resolution must be >= 256"
-
     bg_noise_dist = torch.distributions.Bernoulli(probs=p.bg_noise_density)
     event_dist = torch.distributions.Bernoulli(probs=p.event_density)
 
@@ -247,9 +243,9 @@ def render_shape(
     resolution_upscaled = torch.as_tensor(p.resolution) * p.upsampling_factor
 
     # Initialize scale
-    scale = min_resolution // 3
+    scale = (min_resolution // 3) if p.scale_start is None else p.scale_start
     scale_velocity = 0
-    if p.scale:
+    if p.scale is not None:
         scale = (
             (torch.rand((1,), device=p.device) * (max_size - min_size) + min_size)
             if p.scale_start is None
@@ -262,37 +258,34 @@ def render_shape(
         )
 
     # Initialize starting x, y
-    x = resolution_upscaled[0] // 2 - p.upsampling_factor * scale / 2
-    y = resolution_upscaled[1] // 2 - p.upsampling_factor * scale / 2
+    scaled_buffer = (mask_r + float(scale) // 2) * p.upsampling_factor
+    x = (
+        p.translate_start_x * p.upsampling_factor
+        if p.translate_start_x is not None
+        else torch.empty(1, device=p.device).uniform_(
+            scaled_buffer,
+            resolution_upscaled[0].item() - scaled_buffer,
+        )
+    )
+    y = (
+        p.translate_start_y * p.upsampling_factor
+        if p.translate_start_y is not None
+        else torch.empty(1, device=p.device).uniform_(
+            scaled_buffer,
+            resolution_upscaled[1].item() - scaled_buffer,
+        )
+    )
     if p.translate:
-        scaled_mask = mask_r * p.upsampling_factor
-        scaled_buffer = (mask_r + float(scale)) * p.upsampling_factor
-        x = (
-            p.translate_start_x * p.upsampling_factor
-            if p.translate_start_x is not None
-            else torch.empty(1, device=p.device).uniform_(
-                scaled_mask,
-                resolution_upscaled[0].item() - scaled_buffer,
-            )
-        )
-        y = (
-            p.translate_start_y * p.upsampling_factor
-            if p.translate_start_y is not None
-            else torch.empty(1, device=p.device).uniform_(
-                scaled_mask,
-                resolution_upscaled[1].item() - scaled_buffer,
-            )
-        )
         trans_velocity = (
             ((torch.rand((2,), device=p.device) - 0.5) * 2 * p.translate_velocity_max)
             if p.translate_velocity_start is None
             else p.translate_velocity_start * p.translate_velocity_scale
         )
-    else:
+    else: # Initialize random starting positions
         trans_velocity = torch.zeros((2,), device=p.device)
 
     # Initialize rotation
-    angle = angle_velocity = 0
+    angle = angle_velocity = 0 if p.rotate_start is None else p.rotate_start
     if p.rotate:
         angle = (
             torch.randint(low=0, high=360, size=(1,)).item()
@@ -306,7 +299,7 @@ def render_shape(
         )
 
     # Initialize shear
-    shear = shear_velocity = 0
+    shear = shear_velocity = 0 if p.shear_start is None else p.shear_start
     if p.shear:
         shear = (
             torch.randint(low=0, high=p.shear_max, size=(1,)).item()
@@ -329,9 +322,8 @@ def render_shape(
         # Translate
         x = x + trans_velocity[0]
         y = y + trans_velocity[1]
-        scaled_buffer = (mask_r + img.shape[0]) * p.upsampling_factor
-        x = x.clip(scaled_mask, scaled_buffer)
-        y = y.clip(scaled_mask, scaled_buffer)
+        x = x.clip(scaled_buffer, resolution_upscaled[0] - scaled_buffer)
+        y = y.clip(scaled_buffer, resolution_upscaled[1] - scaled_buffer)
         trans_velocity = (
             trans_velocity + p.translate_velocity_delta(2).to(p.device)
         ).clip(-p.translate_velocity_max, p.translate_velocity_max)
@@ -361,14 +353,14 @@ def render_shape(
             scale_velocity = -1 * scale_velocity
         # Flip horizontal translation velocity if shape is at boundary
         if (
-            x <= mask_r * p.upsampling_factor
-            or x >= resolution_upscaled[0] - mask_r * p.upsampling_factor
+            x <= scaled_buffer
+            or x >= resolution_upscaled[0] - scaled_buffer
         ):
             trans_velocity[0] *= -1
         # Flip vertical translational velocity if shape is at boundary
         if (
-            y <= mask_r * p.upsampling_factor
-            or y >= resolution_upscaled[1] - mask_r * p.upsampling_factor
+            y <= scaled_buffer
+            or y >= resolution_upscaled[1] - scaled_buffer
         ):
             trans_velocity[1] *= -1
 
@@ -378,15 +370,13 @@ def render_shape(
                 p.device
             ).clip(-p.scale_velocity_max, p.scale_velocity_max)
             scale = scale + scale_velocity * p.upsampling_factor
+            # Resize scaled buffer
+            scaled_buffer = (mask_r + float(scale)) * p.upsampling_factor
 
         # Blit image onto frame
-        x_center, y_center = torch.tensor(img.shape) / 2
-        x_min = max(0, x - x_center)
-        y_min = max(0, y - y_center)
-        x_max = min(x_min + img.shape[0], resolution_upscaled[0])
-        y_max = min(y_min + img.shape[1], resolution_upscaled[1])
+        x_center, y_center = torch.tensor([x, y]) - torch.tensor(img.shape) / 2
         current_image = torch.zeros(*resolution_upscaled, device=p.device)
-        blit_shape(img, current_image, x, y, p.device)
+        blit_shape(img, current_image, x_center, y_center, p.device)
 
         # Downsample and compare
         # Note, we ignore the first image because we're taking the difference
@@ -408,7 +398,7 @@ def render_shape(
             if i >= 0:
                 images[i] = ch1.bool() & noise_mask
                 labels[i] = (
-                    torch.tensor([(x_min + x_max) / 2, (y_min + y_max) / 2])
+                    torch.tensor([x, y])
                     / p.upsampling_factor
                 )
 
