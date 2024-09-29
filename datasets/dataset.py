@@ -65,7 +65,9 @@ class ShapeDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         filename = self.files[index // self.chunks]
-        frames, poses = torch.load(filename, map_location=self.device)
+        frames, poses = torch.load(
+            filename, map_location=self.device, weights_only=True
+        )
         frames = frames.to_dense()
         chunk = index % self.chunks
         start = chunk * self.t
@@ -86,10 +88,18 @@ class ShapeDataset(torch.utils.data.Dataset):
 
 
 if __name__ == "__main__":
+    import argparse
     import tqdm
 
-    d = ShapeDataset("/mnt/raid0a/shapes/", pose_delay=3, stack=9, train=True)
-    print(len(d))
-    bar = tqdm.tqdm(range(len(d)))
-    for i in bar:
-        bar.set_description(f"{i}, {len(d[i])}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("root", type=str)
+    parser.add_argument("--file_filter", type=str, default=None)
+    args = parser.parse_args()
+
+    d = ShapeDataset(
+        args.root, pose_delay=3, stack=9, train=True, file_filter=args.file_filter
+    )
+    print(f"Found {len(d)} samples in {len(d.files)} files from root '{args.root}'")
+    print("First 10 files:")
+    for i in tqdm.trange(10):
+        print(d.files[i])
