@@ -93,11 +93,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=str)
-    parser.add_argument("--file_filter", type=str, default=None)
+    parser.add_argument("--filter", type=str, default=None)
+    parser.add_argument("--stack", type=int, default=None)
     args = parser.parse_args()
 
     d = ShapeDataset(
-        args.root, pose_delay=3, stack=9, train=True, file_filter=args.file_filter
+        args.root, pose_delay=3, train=True, file_filter=args.filter, stack=args.stack
     )
     print(f"Found {len(d)} samples in {len(d.files)} files from root '{args.root}'")
     print("First 10 files:")
