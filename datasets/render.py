@@ -33,6 +33,9 @@ def rotate_tensor(input, x):
 
 
 def shear_tensor(image, shear_angle, shear):
+    if shear == 0:
+        return image
+        
     pad = int(image.size()[0] * 2)
 
     y_shear = shear * math.sin(math.pi * shear * shear_angle / 180)
@@ -105,20 +108,58 @@ def blit_shape(shape, bg, x, y, device):
 @dataclass
 class RenderParameters:
     """
-    Parameters for rendering a shape
+    Parameters for rendering a shape.
 
-    resolution (torch.Size): The WxH resolution of the total frame
-    length (int): The number of frames to generate
-    device (str): The device on which the shape will be generated
-    scale(Boolean): If true, the scale will vary
-    translation(Boolean): If true, translation is applied
-    rotate(Boolean): If true, rotation is applied
-    shear(Boolean): If true, shear is applied
+    The arguments are split into two categories: the rendering parameters and the transformation
+    parameters. Rendering parameters configure the behavior of the rendering process, such as the
+    resolution, the number of frames, and the density of the events. Transformation parameters
+    configure the behavior of the transformations applied to the shape, like which transformations
+    to apply, the maximum velocity of the transformations, and the distribution to sample the
+    velocities from.
 
-    shape_density (float): The probability of sampling the underlying shape contour. Default = 1
-    event_density (float): The probability of sampling from the diff between two frames. Default = 1
-    bg_noise_density (float): The probability of sampling from the background noise. Default = 0.002
-    polarity (bool): If true, the shape will be rendered with polarity, output as PxXxY. Default = True
+    Example:
+        This example translates a square with a constant velocity of 1 pixel per frame for 10 frames.
+        >>> import render, shapes
+        >>> p = RenderParameters(
+        ...     resolution=torch.Size([256, 256]),
+        ...     length=10,
+        ...     event_density=1,
+        ...     translate=True,
+        ...     translate_velocity_start=torch.tensor([1, 0], device="cuda"),
+        ...     translate_velocity_delta=render.ZERO_DISTRIBUTION)
+        >>> render_shape(shapes.square, p)
+
+    Arguments:
+        resolution (torch.Size): The WxH resolution of the total frame
+        length (int): The number of frames to generate
+        event_density (float): The probability of sampling from the diff between two frames. Default = 1
+        shape_density (float): The probability of sampling the underlying shape contour. Default = 1
+        bg_noise_density (float): The probability of sampling from the background noise. Default = 0.001
+        polarity (bool): If true, the shape will be rendered with polarity, output as PxXxY. If false,
+            the shape will be rendered as a single channel (-1/+1). Default = True
+        warmup_steps (int): The number of warmup steps to initialize the integration. Default = 5
+        min_fraction (float): The minimum fraction of the resolution to sample the shape. That is,
+            the minimum scale of a shape relative to the viewport. Default = 0.05
+        max_fraction (float): The maximum fraction of the resolution to sample the shape. That is,
+            the maximum scale of a shape relative to the viewport. Default = 0.7
+        border_radius (int): The radius of the border around the shape. Default = 5
+        initial_integration_distribution (torch.distributions.Distribution): The distribution to 
+            initialize the integration. Defaults to a uniform distribution between -0.9 and 0.9 
+            when set to None
+
+        upsampling_factor (int): The factor by which to upsample the resolution. Default = 8
+        upsampling_cutoff (float): The cutoff for the integration. Default = 1/2
+        device (str): The device on which the shape will be generated
+
+        transformation_velocity_max (float): The maximum velocity of transformations. Default = 1
+        transformation_velocity_distribution (Callable[[float], torch.distributions.Distribution]):
+            The default distribution to sample the velocity of transformations. Used when individual
+            transformation velocity distributions are not set. Default = Normal(0, x)
+
+        scale(Boolean): If true, the scale will vary
+        translation(Boolean): If true, translation is applied
+        rotate(Boolean): If true, rotation is applied
+        shear(Boolean): If true, shear is applied
     """
 
     resolution: torch.Size
@@ -126,12 +167,15 @@ class RenderParameters:
     event_density: float = 1
     shape_density: float = 1
     bg_noise_density: float = 0.001
-    shape_density: float = 1
     polarity: bool = True
     warmup_steps: int = 5
+    min_fraction: float = 0.05
+    max_fraction: float = 0.7
+    border_radius: int = 5
+    initial_integration_distribution: Optional[torch.distributions.Distribution] = None
 
     upsampling_factor: int = 8
-    upsampling_cutoff: float = None
+    upsampling_cutoff: float = 1/2
     device: str = "cuda"
 
     transformation_velocity_max: float = 1
@@ -167,8 +211,6 @@ class RenderParameters:
     shear_velocity_start: float = None
 
     def __post_init__(self):
-        if self.upsampling_cutoff is None:
-            self.upsampling_cutoff = 1 / 2
         for attr in ["translate", "scale", "rotate", "shear"]:
             max_velocity = getattr(self, f"transformation_velocity_max") * getattr(
                 self, f"{attr}_velocity_scale"
@@ -193,18 +235,19 @@ class RenderParameters:
 
 class IAFSubtractReset(torch.nn.Module):
 
-    def __init__(self, cutoff: float):
+    def __init__(self, cutoff: float, distribution: torch.distributions.Distribution):
         super().__init__()
         self.cutoff = cutoff
+        self.distribution = distribution
 
     def forward(self, x, state=None):
         if state is None:
-            state = (
-                torch.empty_like(x, dtype=torch.float32).uniform_(
-                    -self.cutoff, self.cutoff
-                )
-                * 0.9
-            )
+            state = self.distribution.sample(x.shape).to(x.device)
+            #     torch.empty_like(x, dtype=torch.float32).uniform_(
+            #         -self.cutoff, self.cutoff
+            #     )
+            #     * 0.9
+            # )
         v_new = state + x
         # compute new positive and negative spikes
         z_pos = v_new > self.cutoff
@@ -229,17 +272,24 @@ def render_shape(
     bg_noise_dist = torch.distributions.Bernoulli(probs=p.bg_noise_density)
     event_dist = torch.distributions.Bernoulli(probs=p.event_density)
 
-    mask_r = 5
+    mask_r = p.border_radius
     images = torch.zeros(p.length, 2, *p.resolution, dtype=torch.bool, device=p.device)
     labels = torch.zeros(p.length, 2)
-    neuron_population = IAFSubtractReset(p.upsampling_cutoff)
+    if p.initial_integration_distribution is None:
+        initial_distribution = torch.distributions.Uniform(
+            -p.upsampling_cutoff * 0.9, p.upsampling_cutoff * 0.9
+        )
+    else:
+        initial_distribution = p.initial_integration_distribution
+    
+    neuron_population = IAFSubtractReset(p.upsampling_cutoff, initial_distribution)
     neuron_state = None
     current_image = None
     previous_image = None
 
     min_resolution = torch.as_tensor(min(p.resolution[0], p.resolution[1]))
-    min_size = (0.05 * min_resolution).int().to(p.device)
-    max_size = (0.6 * min_resolution).int().to(p.device)
+    min_size = (p.min_fraction * min_resolution).int().to(p.device)
+    max_size = (p.max_fraction * min_resolution).int().to(p.device)
     resolution_upscaled = torch.as_tensor(p.resolution) * p.upsampling_factor
 
     # Initialize scale
@@ -268,7 +318,7 @@ def render_shape(
         )
     )
     y = (
-        p.translate_start_y * p.upsampling_factor
+        p.translate_start_y  * p.upsampling_factor
         if p.translate_start_y is not None
         else torch.empty(1, device=p.device).uniform_(
             scaled_buffer,
@@ -281,7 +331,7 @@ def render_shape(
             if p.translate_velocity_start is None
             else p.translate_velocity_start * p.translate_velocity_scale
         )
-    else: # Initialize random starting positions
+    else:  # Initialize random starting positions
         trans_velocity = torch.zeros((2,), device=p.device)
 
     # Initialize rotation
@@ -352,16 +402,10 @@ def render_shape(
             scale = min_size
             scale_velocity = -1 * scale_velocity
         # Flip horizontal translation velocity if shape is at boundary
-        if (
-            x <= scaled_buffer
-            or x >= resolution_upscaled[0] - scaled_buffer
-        ):
+        if x <= scaled_buffer or x >= resolution_upscaled[0] - scaled_buffer:
             trans_velocity[0] *= -1
         # Flip vertical translational velocity if shape is at boundary
-        if (
-            y <= scaled_buffer
-            or y >= resolution_upscaled[1] - scaled_buffer
-        ):
+        if y <= scaled_buffer or y >= resolution_upscaled[1] - scaled_buffer:
             trans_velocity[1] *= -1
 
         # Scale
@@ -371,7 +415,7 @@ def render_shape(
             ).clip(-p.scale_velocity_max, p.scale_velocity_max)
             scale = scale + scale_velocity * p.upsampling_factor
             # Resize scaled buffer
-            scaled_buffer = (mask_r + float(scale)) * p.upsampling_factor
+            scaled_buffer = (mask_r + float(scale) // 2) * p.upsampling_factor
 
         # Blit image onto frame
         x_center, y_center = torch.tensor([x, y]) - torch.tensor(img.shape) / 2
@@ -397,10 +441,7 @@ def render_shape(
             # Assign channels after warmup
             if i >= 0:
                 images[i] = ch1.bool() & noise_mask
-                labels[i] = (
-                    torch.tensor([x, y])
-                    / p.upsampling_factor
-                )
+                labels[i] = torch.tensor([x, y]) / p.upsampling_factor
 
         previous_image = current_image
 
