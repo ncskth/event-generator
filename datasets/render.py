@@ -379,9 +379,10 @@ def render_shape(
         ).clip(-p.translate_velocity_max, p.translate_velocity_max)
         # Rotate
         angle = angle + angle_velocity
+        max_radian_velocity = p.rotate_velocity_max * 180 / torch.pi
         angle_velocity = (
             angle_velocity + p.rotate_velocity_delta(1).to(p.device) * 180 / torch.pi
-        ).clip(-p.rotate_velocity_max, p.rotate_velocity_max)
+        ).clip(-max_radian_velocity, max_radian_velocity)
         img = rotate_tensor(img, float(angle))
 
         # Shear
