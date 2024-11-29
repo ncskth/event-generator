@@ -269,8 +269,16 @@ def render_shape(
     Returns:
         A tensor of size (lengh, resolution)
     """
-    bg_noise_dist = torch.distributions.Bernoulli(probs=p.bg_noise_density)
+
+    
+    # We scale the noise by half if we output polarities, since we sample over two channels
+    bg_noise_dist = torch.distributions.Bernoulli(probs=p.bg_noise_density / 2) if p.polarity else p.bg_noise_density
+    # We take the square root of the noise since this effect will multiply across two frames
+    # (causing change in every missing pixels)
+    shape_density = torch.pow(torch.as_tensor(p.shape_density), 0.25) if p.polarity else p.shape_density
+    # Event density is not channel dependent
     event_dist = torch.distributions.Bernoulli(probs=p.event_density)
+    print(shape_density)
 
     mask_r = p.border_radius
     images = torch.zeros(p.length, 2, *p.resolution, dtype=torch.bool, device=p.device)
@@ -366,7 +374,7 @@ def render_shape(
     for i in range(-p.warmup_steps - 1, images.shape[0]):
         # Fill in shape
         img = shape_fn(
-            int(scale * p.upsampling_factor), p=p.shape_density, device=p.device
+            int(scale * p.upsampling_factor), p=shape_density, device=p.device
         )
 
         # Translate
