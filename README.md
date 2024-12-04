@@ -1,4 +1,4 @@
-# Event-based vison dataset generation
+# GERD: Generated event response data generation
 
 ![](https://zenodo.org/badge/DOI/10.5281/zenodo.11063678.svg)
 

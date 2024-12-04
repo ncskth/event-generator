@@ -32,7 +32,7 @@ class DatasetParameters(NamedTuple):
     polarity: bool = True
 
     upsampling_factor: int = 8
-    upsampling_cutoff: Optional[float] = None
+    upsampling_cutoff: float = 1 / 2
     bg_files: Optional[List[str]] = None
     device: str = "cuda"
     length: int = 128
@@ -77,7 +77,7 @@ def render_shapes(p: DatasetParameters):
                 args["scale_velocity_start"] = (
                     (cat.sample((1,)).to(p.device) - 0.5) * 2 * p.max_velocity
                 )
-            if isinstance(p.scale, Number):
+            if isinstance(p.scale, Number) and not isinstance(p.scale, bool):
                 args["scale_velocity_delta"] = lambda x: ZERO_DISTRIBUTION.sample((x,))
                 args["scale_start"] = float(p.scale)
             if p.rotate:
@@ -258,4 +258,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ray.init()
-    asyncio.run(main(args))
+    main(args)

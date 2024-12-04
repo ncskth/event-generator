@@ -193,13 +193,13 @@ class RenderParameters:
     scale: bool = False
     scale_start: float = None
     scale_velocity_delta: Callable[[int], torch.Tensor] = None
-    scale_velocity_scale: float = 0.005
+    scale_velocity_scale: float = 0.05
     scale_velocity_max: float = field(init=False)
     scale_velocity_start: float = None
     rotate: bool = False
     rotate_start: float = None
     rotate_velocity_delta: Callable[[int], torch.Tensor] = None
-    rotate_velocity_scale: float = 0.1
+    rotate_velocity_scale: float = 0.05
     rotate_velocity_max: float = field(init=False)
     rotate_velocity_start: float = None
     shear: bool = False
@@ -270,7 +270,6 @@ def render_shape(
         A tensor of size (lengh, resolution)
     """
 
-    
     # We scale the noise by half if we output polarities, since we sample over two channels
     bg_noise_dist = torch.distributions.Bernoulli(probs=p.bg_noise_density / 2) if p.polarity else p.bg_noise_density
     # We take the square root of the noise since this effect will multiply across two frames
@@ -278,7 +277,6 @@ def render_shape(
     shape_density = torch.pow(torch.as_tensor(p.shape_density), 0.25) if p.polarity else p.shape_density
     # Event density is not channel dependent
     event_dist = torch.distributions.Bernoulli(probs=p.event_density)
-    print(shape_density)
 
     mask_r = p.border_radius
     images = torch.zeros(p.length, 2, *p.resolution, dtype=torch.bool, device=p.device)
@@ -343,7 +341,8 @@ def render_shape(
         trans_velocity = torch.zeros((2,), device=p.device)
 
     # Initialize rotation
-    angle = angle_velocity = 0 if p.rotate_start is None else p.rotate_start
+    angle = 0 if p.rotate_start is None else p.rotate_start
+    angle_velocity = 0
     if p.rotate:
         angle = (
             torch.randint(low=0, high=360, size=(1,)).item()
@@ -386,11 +385,12 @@ def render_shape(
             trans_velocity + p.translate_velocity_delta(2).to(p.device)
         ).clip(-p.translate_velocity_max, p.translate_velocity_max)
         # Rotate
-        angle = angle + angle_velocity
-        max_radian_velocity = p.rotate_velocity_max * 180 / torch.pi
-        angle_velocity = (
-            angle_velocity + p.rotate_velocity_delta(1).to(p.device) * 180 / torch.pi
-        ).clip(-max_radian_velocity, max_radian_velocity)
+        if p.rotate:
+            angle = angle + angle_velocity
+            max_radian_velocity = p.rotate_velocity_max * 180 / torch.pi
+            angle_velocity = (
+                angle_velocity + p.rotate_velocity_delta(1).to(p.device) * 180 / torch.pi
+            ).clip(-max_radian_velocity, max_radian_velocity)
         img = rotate_tensor(img, float(angle))
 
         # Shear
