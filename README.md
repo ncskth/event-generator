@@ -1,7 +1,7 @@
 # GERD: Generated event response data generation
 
-![](https://img.shields.io/badge/DOI-arXiv%3A1408.3644-B31B1B.svg)
-![](https://zenodo.org/badge/DOI/10.5281/zenodo.11063678.svg)
+[![](https://img.shields.io/badge/DOI-arXiv%3A1408.3644-B31B1B.svg)](https://arxiv.org/abs/2412.03259)
+[![](https://zenodo.org/badge/DOI/10.5281/zenodo.11063678.svg)](https://zenodo.org/records/11063678)
 
 This repository lets you generate event-based datasets for objects tracking tasks at arbitrary resolutions subject to arbitrary transformations.
 Both the shapes and the transformations can be arbitrarily parameterized, which is useful to study the robustness of event-based algorithms to, for instance, different velocities and transformations&mdash;something that happens *very* frequently in the real world, but that is often overlooked in the literature.
